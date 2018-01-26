@@ -486,38 +486,3 @@ class EzcapechatRTMPProtocol:
                 new_topic
             ]
         )
-
-    # experimental. Based on the info from the decompiled SWF.
-    def send_start_hash_test(self):
-        # this causes an exception at the server end (NetConnection.Call.Failed)
-        # according to the error description, the params are wrong.
-        self.connection.call(
-            'start_hash_test',
-            [
-                self._room_id,
-                self._msg_key,
-                self.username
-            ]
-        )
-
-    def send_announce(self, announce_msg):
-        self.connection.call(
-            'announce',
-            [
-                self._room_id,
-                self._msg_key,
-                self.username,
-                announce_msg
-            ]
-        )
-
-    def send_server_cmd(self, cmd):
-        self.connection.call(
-            'server_command',
-            [
-                self._room_id,
-                self._msg_key,
-                self.username,
-                cmd
-            ]
-        )
