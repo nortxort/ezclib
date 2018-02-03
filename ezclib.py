@@ -4,12 +4,13 @@ import logging
 import time
 
 import config
+import user
 from apis import ezcapechat
 from pages import acc
 from util import string_util
 from rtmplib import rtmp
 
-__version__ = '1.0.0'
+__version__ = '1.1.0'
 log = logging.getLogger(__name__)
 CONFIG = config
 
@@ -36,29 +37,26 @@ class EzcapechatRTMPProtocol:
         :type proxy: str
         """
         self.room_name = u'' + room_name
-        self.username = u'' + username
         self.email = email
         self.password = password
         self.proxy = proxy
 
         self.connection = None
         self.is_connected = False
-        self.client_id = 0
+
+        self.users = user.Users()
+        self.users.add_client(username)
 
         self._pub_n_key = None
         self._room_id = 0
-        self._msg_key = u''
         self._msg_counter = 1
 
     def _reset(self):
         """
 
         """
-        self.username = u''
-        self.client_id = 0
         self._pub_n_key = None  # consider this
         self._room_id = 0
-        self._msg_key = u''
         self._msg_counter = 1
 
     def login(self):
@@ -82,11 +80,11 @@ class EzcapechatRTMPProtocol:
         """ Connect to the remote server. """
         _error = None
 
-        if not self.username.strip():
-            self.username = string_util.create_random_string(6, 25)  # adjust length
+        if not self.users.client.nick.strip():
+            self.users.client.nick = string_util.create_random_string(6, 25)  # adjust length
 
         try:
-            params = ezcapechat.Params(self.room_name, self.username,
+            params = ezcapechat.Params(self.room_name, self.users.client.nick,
                                        n_key=self._pub_n_key, proxy=self.proxy)
 
             self.connection = rtmp.RtmpClient(
@@ -97,12 +95,12 @@ class EzcapechatRTMPProtocol:
                 swf_url=params.swf_url,
                 page_url=params.page_url,
                 proxy=self.proxy,
-                is_win=True
+                is_win=True         # delete/set to false if not on windows
             )
 
             self.connection.connect(
                 [
-                    u'connect',             # custom connect string?
+                    u'connect',             # application connect string?
                     u'',                    # ?
                     params.t1,              # t1
                     params.t2,              # t2
@@ -111,7 +109,7 @@ class EzcapechatRTMPProtocol:
                     u'',                    # ?
                     u'',                    # ?
                     self.room_name,         # room name
-                                            # value of guid (Shared Local Object)
+                                            # value of guid (Local Shared Object)
                     u'A62E0786-7113-2F6F-9C14-6602B02F1872-A7F34D64-C322-314C-642F-B045CF448907',
                                             # ?
                     u'68F234E8-4070-59B7-0D9A-CAE4A8D33539-1BFE74C1-C98E-2834-3A85-BFA16CF4C032',
@@ -165,7 +163,7 @@ class EzcapechatRTMPProtocol:
                 msg_type = amf_data['msg']
             except Exception as e:
                 fails += 1
-                print ('__callback error(%s): %s' % (fails, e))
+                log.error(e, exc_info=True)
                 if fails == 2:
                     self.reconnect()
                     break
@@ -190,8 +188,7 @@ class EzcapechatRTMPProtocol:
                         self.on_join_data(event_data)
 
                     elif event == 'joinuser':
-                        data = event_data[3:-1]
-                        self.on_joinuser(data)
+                        self.on_joinuser(event_data)
 
                     elif event == 'sendUserList':
                         self.on_send_userlist(event_data[3])
@@ -219,7 +216,7 @@ class EzcapechatRTMPProtocol:
                         self.on_status_update(event_data)
 
                     elif event == 'connectionOK':
-                        self.on_connectin_ok(event_data)
+                        self.on_connectin_ok()
 
                     elif event == 'ytVideoQueueAdd':
                         self.on_yt_video_queue_add(event_data)
@@ -295,17 +292,16 @@ class EzcapechatRTMPProtocol:
         :param data: The join data as a list.
         :type data: list
         """
-        self._msg_key = data[7]  # unique identifier for messages?
-        self._room_id = data[13]
-
-        json_data = json.loads(data[6])
-        self.client_id = json_data['u']
+        self.users.client.key = data[7]         # unique user identifier ?
+        self.users.client.join_time = data[11]  # join time as unix including milliseconds ?
+        self._room_id = data[13]                # room id
 
         self.send_connection_ok()
 
         if config.DEBUG_TO_CONSOLE:
+            print ('Join Data:')
             for i, v in enumerate(data):
-                print ('[%s] - %s' % (i, v))
+                print ('\t[%s] - %s' % (i, v))
 
     def on_joinuser(self, data):
         """
@@ -314,33 +310,61 @@ class EzcapechatRTMPProtocol:
         :param data: Information about the user.
         :type data: list
         """
-        # TODO: add user data(json_data) to User object.
-        # data[1] = mod level ?
-        json_data = json.loads(data[2])
-        if json_data['u'] != self.client_id:
-            print ('%s:%s Joined the room.' % (data[0], json_data['u']))
+        user_data = {
+            'un': data[3],      # nick
+            'ml': data[4],      # mod level
+            'st': data[5],      # status related
+            'id': data[6],      # ezcapechat user id
+            'su': data[7]       # ?
+        }
+        if data[3] == self.users.client.nick:
+            self.users.add_client_data(user_data)
+        else:
+            _user = self.users.add(data[3], user_data)
+            print ('%s Joined the room.' % _user.nick)
 
     def on_send_userlist(self, data):
+        """
+
+        :param data:
+        :type data:
+        """
         json_data = json.loads(data)
         for user_name in json_data:
-            # add this data to the user object
-            user_data = json.loads(json_data[user_name])
-            print ('%s-> %s' % (user_name, user_data))
+            if user_name != self.users.client.nick:
+                user_data = json.loads(json_data[user_name])
+                _user = self.users.add(user_name, user_data)
+                print ('\tJoins: %s' % _user)
 
     def on_cam_list(self, data):
-        # add this data to the user object
+        """
+
+        add this data to the user object
+        :param data:
+        :type data:
+        """
         json_data = json.loads(data)
         for k in json_data:
             print (json_data[k])
 
     def on_update_room_security(self, data):
-        # this might be related to the room settings.
+        """
+
+        related to the room settings.
+        :param data:
+        :type data:
+        """
         if config.DEBUG_TO_CONSOLE:
             print ('Update room security:')
             for i, v in enumerate(data):
-                print ('[%s] - %s' % (i, v))
+                print ('\t[%s] - %s' % (i, v))
 
     def on_receive_public_msg(self, data):
+        """
+
+        :param data:
+        :type data:
+        """
         if len(data) > 5:
             # data[3] = unix time stamp including milliseconds.
             user_name = data[4]
@@ -348,7 +372,14 @@ class EzcapechatRTMPProtocol:
             self.message_handler(user_name, msg)
 
     def message_handler(self, user_name, msg):
-        # or overwrite om_receive_public_msg?
+        """
+
+        or overwrite om_receive_public_msg?
+        :param user_name:
+        :type user_name:
+        :param msg:
+        :type msg:
+        """
         print ('%s: %s' % (user_name, msg))
 
     def on_typing_pm(self, data):
@@ -380,6 +411,7 @@ class EzcapechatRTMPProtocol:
         :param username: The username of the user leaving the room.
         :type username: str
         """
+        self.users.remove(username)
         print ('%s left the room.' % username)
 
     def on_status_update(self, data):
@@ -387,16 +419,16 @@ class EzcapechatRTMPProtocol:
         Received when a user changes their status. E.g /afk or /back.
 
         :param data:
-        :type data:
+        :type data: list
         """
+        # TODO: Update User/Client object with this info
         print ('Status Update: %s' % data)
 
-    def on_connectin_ok(self, data):
+    def on_connectin_ok(self):
         """
-        :param data:
-        :type data:
+
         """
-        print ('ConnectionOk: %s' % data)
+        print ('ConnectionOk: The connection to the room was established.')
 
     def on_yt_video_queue_add(self, data):
         """
@@ -415,7 +447,7 @@ class EzcapechatRTMPProtocol:
         print ('Current video: %s (%s)' % (data[4], data[3]))
 
     def on_yt_video_queue(self, data):
-        # not sure what to make of this.
+        # hmm. what*?.
         json_data = json.loads(data[3])
         print ('ytVideoQueue: %s' % json_data['c'])
 
@@ -428,8 +460,8 @@ class EzcapechatRTMPProtocol:
             'connectionOK',
             [
                 self._room_id,
-                self._msg_key,
-                self.username,
+                self.users.client.key,
+                self.users.client.nick,
                 u'1116348-1751801027-1858934494-1134291946'  # ?
             ]
         )
@@ -445,8 +477,8 @@ class EzcapechatRTMPProtocol:
             'send_public',
             [
                 self._room_id,
-                self._msg_key,
-                self.username,
+                self.users.client.key,
+                self.users.client.nick,
                 msg,
                 '0',
                 '#dddddd',         # text color.
@@ -455,23 +487,43 @@ class EzcapechatRTMPProtocol:
             ]
         )
 
+    def send_secure_message(self, msg):
+        self.connection.call(
+            'secure_message',
+            [
+                self._room_id,
+                self.users.client.key,
+                self.users.client.nick,
+                msg,
+                '0',            # text size?
+                100,            # ?
+                self._msg_counter
+            ]
+        )
+
     def send_tp_get_queue(self):
+        """
+
+        """
         self.connection.call(
             'tpGetQueue',
             [
                 self._room_id,
-                self._msg_key,
-                self.username
+                self.users.client.key,
+                self.users.client.nick
             ]
         )
 
     def send_tp_get_current(self):
+        """
+
+        """
         self.connection.call(
             'tpGetCurrent',
             [
                 self._room_id,
-                self._msg_key,
-                self.username
+                self.users.client.key,
+                self.users.client.nick
             ]
         )
 
@@ -481,8 +533,8 @@ class EzcapechatRTMPProtocol:
             'change_topic',
             [
                 self._room_id,
-                self._msg_key,
-                self.username,
+                self.users.client.key,
+                self.users.client.nick,
                 new_topic
             ]
         )
